@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard - Crypto Tax</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
+        .container { background: white; padding: 20px; border-radius: 8px; max-width: 600px; margin: auto; }
+        .btn { background: #dc3545; color: white; padding: 10px; text-decoration: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome, {{ name }}! 🚀</h1>
+        <p>Aap successfully login ho gaye ho.</p>
+        <!-- ... purana code ... -->
+        <p>Abhi yahan sirf dashboard hai. Aage hum yahan Tax Calculator lagayenge.</p>
+        <br>
+        <!-- Ye naya code add karo -->
+    <div style="margin-top: 20px;">
+        <a href="/calculate" style="background: #f7931a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px;">Manual Calculator</a>
+        <a href="/upload" style="background: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px;">📤 CSV Upload (AI)</a>
+        <a href="/history" style="background: #333; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View History</a>
+        <a href="/export" style="background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">📥 Export</a>
+    </div>    
+
+    <br>
+        <a href="/logout" class="btn">Logout</a>
+        <!-- ... purana code ... -->
+
+    </div>
+</body>
+</html>

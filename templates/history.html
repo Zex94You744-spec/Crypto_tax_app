@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>History - Crypto Tax</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
+        .container { background: white; padding: 20px; border-radius: 8px; max-width: 600px; margin: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f7931a; color: white; }
+        .nav { margin-bottom: 20px; }
+        .nav a { margin-right: 10px; text-decoration: none; color: #333; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <a href="/dashboard">Dashboard</a> | <a href="/calculate">Calculator</a> | <a href="/logout">Logout</a>
+        </div>
+        <h2>📜 Your Trade History</h2>
+        <table>
+            <tr>
+                <th>Date</th>
+                <th>Buy</th>
+                <th>Sell</th>
+                <th>Net Profit</th>
+                <th>Tax</th>
+            </tr>
+            {% for trade in trades %}
+            <tr>
+                <td>{{ trade.date.strftime('%Y-%m-%d') }}</td>
+                <td>₹{{ trade.buy_price }}</td>
+                <td>₹{{ trade.sell_price }}</td>
+                <td>₹{{ trade.profit }}</td>
+                <td>₹{{ trade.tax }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% if not trades %}
+        <p>No trades yet. Start calculating!</p>
+        {% endif %}
+    </div>
+</body>
+</html>
