@@ -349,6 +349,7 @@ def buy_premium():
 
 # --- CSV Upload (Monthly=Single, Yearly=Multiple) ---
 # --- CSV Upload (Monthly=Single, Yearly=Multiple) - NO PANDAS VERSION ---
+# --- CSV Upload (Monthly=Single, Yearly=Multiple) - BUILT-IN CSV VERSION ---
 @app.route('/upload', methods=['GET', 'POST'])
 @login_required
 def upload():
@@ -378,47 +379,51 @@ def upload():
                 try:
                     file.save(filepath)
 
-                    # ✅ Using built-in csv module instead of pandas
+                    # ✅ Using built-in csv module (NO pandas needed)
                     import csv
-                    with open(filepath, 'r', encoding='utf-8') as f:
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                         reader = csv.DictReader(f)
                         file_trades = 0
 
                         for row in reader:
-                            trade_type = str(row.get('Type', '')).strip().upper()
-                            fees_str = row.get('Fees', '0') or '0'
-                            fees = float(fees_str) if fees_str else 0
+                            try:
+                                trade_type = str(row.get('Type', '')).strip().upper()
+                                fees_str = row.get('Fees', '0') or '0'
+                                fees = float(fees_str) if fees_str else 0
 
-                            if trade_type == 'BUY':
-                                file_trades += 1
-                            elif trade_type == 'SELL':
-                                total_str = row.get('Total', '0') or '0'
-                                sell_value = float(total_str) if total_str else 0
-                                buy_value = sell_value * 0.8  # Simplified logic
+                                if trade_type == 'BUY':
+                                    file_trades += 1
+                                elif trade_type == 'SELL':
+                                    total_str = row.get('Total', '0') or '0'
+                                    sell_value = float(total_str) if total_str else 0
+                                    buy_value = sell_value * 0.8  # Simplified logic
 
-                                gross_profit = sell_value - buy_value - fees
-                                gst_on_fees = fees * 0.18
-                                total_fees = fees + gst_on_fees
+                                    gross_profit = sell_value - buy_value - fees
+                                    gst_on_fees = fees * 0.18
+                                    total_fees = fees + gst_on_fees
 
-                                if gross_profit > 0:
-                                    income_tax = gross_profit * 0.30
-                                    cess = income_tax * 0.04
-                                    tds = sell_value * 0.01
-                                    net_profit = gross_profit - income_tax - cess - tds - total_fees
-                                else:
-                                    income_tax = cess = tds = 0
-                                    net_profit = gross_profit - total_fees
+                                    if gross_profit > 0:
+                                        income_tax = gross_profit * 0.30
+                                        cess = income_tax * 0.04
+                                        tds = sell_value * 0.01
+                                        net_profit = gross_profit - income_tax - cess - tds - total_fees
+                                    else:
+                                        income_tax = cess = tds = 0
+                                        net_profit = gross_profit - total_fees
 
-                                new_trade = Trade(
-                                    buy_price=buy_value,
-                                    sell_price=sell_value,
-                                    fees=fees,
-                                    profit=net_profit,
-                                    tax=(income_tax + cess),
-                                    user_id=current_user.id
-                                )
-                                db.session.add(new_trade)
-                                file_trades += 1
+                                    new_trade = Trade(
+                                        buy_price=buy_value,
+                                        sell_price=sell_value,
+                                        fees=fees,
+                                        profit=net_profit,
+                                        tax=(income_tax + cess),
+                                        user_id=current_user.id
+                                    )
+                                    db.session.add(new_trade)
+                                    file_trades += 1
+                            except Exception as row_err:
+                                print(f"⚠️ Skipping row: {row_err}")
+                                continue
 
                     total_trades += file_trades
                     print(f"✅ File {filename}: {file_trades} trades processed")

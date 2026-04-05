@@ -1,5 +1,25 @@
-instance/
-uploads/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Database (local only)
+instance/
+*.db
+
+# Uploads (user files)
+uploads/
+
+# Environment
 .env
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
