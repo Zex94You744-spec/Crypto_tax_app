@@ -6,63 +6,29 @@
     <title>Upload CSV - Crypto Tax</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container { 
-            max-width: 500px; 
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }
+        body { font-family: sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
         h2 { color: #333; margin-bottom: 10px; text-align: center; }
-        .nav { margin-bottom: 20px; text-align: center; }
-        .nav a { margin: 0 8px; text-decoration: none; color: #667eea; font-weight: 600; font-size: 14px; }
-        .info { background: #f0f4ff; padding: 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; border-left: 4px solid #667eea; }
+        .nav { margin-bottom: 20px; }
+        .nav a { color: #667eea; text-decoration: none; font-weight: bold; }
+        .info { background: #e3f2fd; padding: 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; border-left: 4px solid #667eea; }
         .info strong { color: #667eea; }
         
-        /* File Input - MUST be inside form */
         .file-input-wrapper { margin: 20px 0; }
         .file-input-wrapper input[type="file"] {
-            width: 100%;
-            padding: 15px;
-            border: 3px dashed #667eea;
-            border-radius: 10px;
-            background: #f8faff;
-            cursor: pointer;
+            width: 100%; padding: 15px; border: 3px dashed #667eea; border-radius: 10px; background: #f8faff; cursor: pointer;
         }
-        .file-name {
-            margin-top: 10px;
-            color: #28a745;
-            font-weight: 600;
-            font-size: 14px;
-            word-break: break-all;
-        }
+        .file-list { margin-top: 15px; }
+        .file-item { background: #f0f4ff; padding: 10px; margin: 5px 0; border-radius: 5px; font-size: 14px; }
         
-        /* Submit Button */
-        .btn-submit {
-            width: 100%;
-            padding: 15px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-top: 15px;
-        }
+        .btn-submit { width: 100%; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 15px; }
         .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
         
-        /* Flash Messages */
         .flash { padding: 12px; margin: 15px 0; border-radius: 8px; font-size: 14px; }
         .flash.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .flash.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        
+        .premium-badge { background: #f7931a; color: white; padding: 5px 15px; border-radius: 20px; font-size: 12px; display: inline-block; margin-bottom: 15px; }
     </style>
 </head>
 <body>
@@ -74,14 +40,18 @@
             <a href="/logout">Logout</a>
         </div>
         
-        <h2>📤 Upload CSV File</h2>
-        
-        <div class="info">
-            <strong>✅ Required Format:</strong><br>
-            Columns: Date, Type (BUY/SELL), Asset, Amount, Price, Total, Fees
+        <h2>📤 Upload CSV Files</h2>
+        <div style="text-align: center;">
+            <span class="premium-badge">👑 PREMIUM FEATURE</span>
         </div>
         
-        <!-- Flash Messages -->
+        <div class="info">
+            <strong>✅ Supported Format:</strong><br>
+            Columns: Date, Type (BUY/SELL), Asset, Amount, Price, Total, Fees<br>
+            Example: WazirX, CoinDCX, Binance export<br><br>
+            <strong>📁 Multi-File Upload:</strong> Select multiple CSV files at once!
+        </div>
+        
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
@@ -89,53 +59,64 @@
                 {% endfor %}
             {% endif %}
         {% endwith %}
-        
-        <!-- ✅ FORM START - File input is NOW inside form -->
+
         <form method="POST" enctype="multipart/form-data" id="uploadForm">
-            
             <div class="file-input-wrapper">
-                <label for="csvFile"><strong>Select CSV File:</strong></label>
-                <!-- ✅ File input inside form with name="file" -->
-                <input type="file" 
-                       name="file" 
-                       id="csvFile" 
-                       accept=".csv,text/csv" 
-                       required 
-                       onchange="showFileName()">
-                <div class="file-name" id="fileName"></div>
+                <label for="csvFiles"><strong>Select CSV File(s):</strong></label>
+        
+                {% if current_user.plan_type == 'yearly' %}
+                <!-- Yearly: Multiple files allowed -->
+                <input type="file" name="files" id="csvFiles" accept=".csv,text/csv" required multiple onchange="showFileNames()">
+                <p style="color: #28a745; font-size: 13px; margin-top: 5px;">✅ Yearly Plan: Multiple files allowed</p>
+                  {% else %}
+                <!-- Monthly: Single file only -->
+                <input type="file" name="files" id="csvFiles" accept=".csv,text/csv" required onchange="showFileNames()">
+                <p style="color: #f7931a; font-size: 13px; margin-top: 5px;">⚠️ Monthly Plan: 1 file at a time</p>
+                {% endif %}
+        
+                <div class="file-list" id="fileList"></div>
             </div>
-            
-            <button type="submit" class="btn-submit" id="submitBtn">
-                🤖 Auto Calculate with AI
-            </button>
-        </form>
-        <!-- ✅ FORM END -->
+    
+            <button type="submit" class="btn-submit" id="submitBtn">🤖 Auto Calculate</button>
+        </form>        
     </div>
 
     <script>
-        function showFileName() {
-            const input = document.getElementById('csvFile');
-            const nameDiv = document.getElementById('fileName');
+        function showFileNames() {
+            const input = document.getElementById('csvFiles');
+            const fileList = document.getElementById('fileList');
             const submitBtn = document.getElementById('submitBtn');
-            
-            if (input.files && input.files[0]) {
-                const file = input.files[0];
-                const fileSize = (file.size / 1024).toFixed(2);
-                nameDiv.innerHTML = `✅ ${file.name}<br><small>(${fileSize} KB)</small>`;
-                submitBtn.innerHTML = '🤖 Auto Calculate with AI';
-                console.log('✅ File selected:', file.name);
-                console.log('✅ File type:', file.type);
-            } else {
-                nameDiv.innerHTML = '';
+    
+            fileList.innerHTML = '';
+    
+            if (input.files && input.files.length > 0) {
+                for (let i = 0; i < input.files.length; i++) {
+                    const file = input.files[i];
+                    const fileSize = (file.size / 1024).toFixed(2);
+                    const div = document.createElement('div');
+                    div.className = 'file-item';
+                    div.innerHTML = `📄 ${file.name} <small>(${fileSize} KB)</small>`;
+                    fileList.appendChild(div);
+                }
+        
+                 {% if current_user.plan_type == 'yearly' %}
+                    submitBtn.innerHTML = `🤖 Auto Calculate ${input.files.length} File(s)`;
+                 {% else %}
+                    submitBtn.innerHTML = `🤖 Auto Calculate ${input.files[0].name}`;
+                 {% endif %}
+        
+                console.log(`✅ ${input.files.length} file(s) selected`);
+             } else {
+                submitBtn.innerHTML = '🤖 Auto Calculate';
             }
         }
-        
-        // Show processing message on submit
+
         document.getElementById('uploadForm').addEventListener('submit', function() {
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.innerHTML = '⏳ Processing... Please wait';
             submitBtn.disabled = true;
         });
+        
     </script>
 </body>
 </html>

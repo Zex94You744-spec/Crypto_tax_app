@@ -4,29 +4,82 @@
     <title>Dashboard - Crypto Tax</title>
     <style>
         body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
-        .container { background: white; padding: 20px; border-radius: 8px; max-width: 600px; margin: auto; }
-        .btn { background: #dc3545; color: white; padding: 10px; text-decoration: none; border-radius: 5px; }
+        .container { background: white; padding: 20px; border-radius: 8px; max-width: 700px; margin: auto; }
+        .btn { padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 5px; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-premium { background: #f7931a; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .badge { padding: 5px 10px; border-radius: 5px; font-size: 12px; }
+        .badge-premium { background: #f7931a; color: white; }
+        .badge-free { background: #6c757d; color: white; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #667eea; }
+        .stat-label { font-size: 12px; color: #666; }
+        .free-limit { background: #fff3cd; padding: 10px; border-radius: 5px; margin: 15px 0; text-align: center; }
+        .free-limit.warning { background: #f8d7da; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Welcome, {{ name }}! 🚀</h1>
-        <p>Aap successfully login ho gaye ho.</p>
-        <!-- ... purana code ... -->
-        <p>Abhi yahan sirf dashboard hai. Aage hum yahan Tax Calculator lagayenge.</p>
+        
+        {% if is_active %}
+            <p>Status: <span class="badge badge-premium">👑 PREMIUM ({{ current_user.plan_type|upper }})</span></p>
+        {% if current_user.plan_type == 'monthly' %}
+            <p style="font-size: 13px; color: #f7931a;">⚠️ Monthly Plan: Upload 1 file at a time</p>
+        {% else %}
+            <p style="font-size: 13px; color: #28a745;">✅ Yearly Plan: Upload multiple files at once</p>
+        {% endif %}
+        {% else %}
+            <p>Status: <span class="badge badge-free">🔓 FREE PLAN</span></p>
+        {% endif %}
+        
+        <!-- Free Limit Warning -->
+        {% if not is_active and free_remaining is defined %}
+            {% if free_remaining <= 2 %}
+            <div class="free-limit warning">
+                ⚠️ Only <strong>{{ free_remaining }}/{{ free_limit }}</strong> calculations remaining this month!
+                <a href="/pricing" style="color: #721c24; font-weight: bold;">Upgrade Now</a>
+            </div>
+            {% else %}
+            <div class="free-limit">
+                📊 <strong>{{ free_remaining }}/{{ free_limit }}</strong> calculations remaining this month
+            </div>
+            {% endif %}
+        {% endif %}
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value">{{ total_trades }}</div>
+                <div class="stat-label">Total Trades</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" style="color: {{ 'green' if total_profit > 0 else 'red' }}">₹{{ total_profit|round(2) }}</div>
+                <div class="stat-label">Net Profit</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">₹{{ total_tax|round(2) }}</div>
+                <div class="stat-label">Total Tax</div>
+            </div>
+        </div>
+        
+        <hr>
+        
+        <div style="margin-top: 20px;">
+            <a href="/calculate" class="btn btn-primary"> Manual Calculator</a>
+            {% if is_active %}
+                <a href="/upload" class="btn btn-premium">📤 CSV Upload (AI)</a>
+                <a href="/export" class="btn btn-success">📥 Export Report</a>
+            {% else %}
+                <a href="/pricing" class="btn btn-premium">🔒 Unlock CSV Upload</a>
+            {% endif %}
+            <a href="/history" class="btn btn-danger">📜 History</a>
+            <a href="/pricing" class="btn" style="background:#667eea; color:white;">💎 Pricing</a>
+        </div>
         <br>
-        <!-- Ye naya code add karo -->
-    <div style="margin-top: 20px;">
-        <a href="/calculate" style="background: #f7931a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px;">Manual Calculator</a>
-        <a href="/upload" style="background: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-right: 10px;">📤 CSV Upload (AI)</a>
-        <a href="/history" style="background: #333; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">View History</a>
-        <a href="/export" style="background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">📥 Export</a>
-    </div>    
-
-    <br>
-        <a href="/logout" class="btn">Logout</a>
-        <!-- ... purana code ... -->
-
+        <a href="/logout" class="btn btn-danger">Logout</a>
     </div>
 </body>
 </html>

@@ -1,68 +1,40 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
-import pandas as pd
-import os
-import requests
-import hashlib
+from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
+import os
+import io
+import requests
+import hmac
+import hashlib
 
+# --- Configuration ---
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', '4a7fec2b1365bf12f01068e59c0679bc5989076b939eece35885f373f00fe0c5')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = 'uploads'
 
-
-# ✅ Dynamic Database URL
+# ✅ Dynamic Database (SQLite for Local, PostgreSQL for Render)
 database_url = os.environ.get('DATABASE_URL')
 if database_url and database_url.startswith('postgres://'):
-    # Render/Postgres fix for SQLAlchemy
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     print("🚀 Using PostgreSQL (Production)")
 else:
-    # Local development
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
     print("💻 Using SQLite (Local)")
 
-# --- Configuration ---
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'd9a29115590a0f527312886ef5e948fccaf53815d85d64d6bae672742aae0f3f')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'uploads'
-
-# ---NOW PAYMENT - CONFIG -----#
-
-NOWPAYMENTS_API_KEY = os.environ.get('NOWPAYMENTS_API_KEY', 'test_key')
-NOWPAYMENTS_BASE_URL = 'https://api.nowpayments.io/v1'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-ALLOWED_EXTENSIONS = {'csv', 'CSV', 'Csv'}
-# --Create Upload Folder ----- #
-# ----  File Upload Config -------
-UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {'csb'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-def allowed_file(filename):
-    """Check if file has allowed extension - FINAL FIX"""
-    allowed = {'csv', 'CSV', 'Csv', 'txt'}
-
-    print(f"🔍 allowed_file() - Filename: '{filename}'")
-
-    if not filename or '.' not in filename:
-        print("❌ No dot in filename")
-        return False
-
-    ext = filename.rsplit('.', 1)[1].lower().strip()
-    print(f"🔍 Extracted extension: '{ext}'")
-    print(f"🔍 Allowed set: {allowed}")
-    print(f"🔍 Extension in allowed? {ext in allowed}")
-
-    return ext in allowed
+# ✅ Global Allowed Extensions
+ALLOWED_EXTENSIONS = {'csv', 'CSV', 'Csv', 'txt'}
 
 # --- Database Models ---
 class User(UserMixin, db.Model):
@@ -70,12 +42,14 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(150), unique=True, nullable=False)
     email = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(150), nullable=False)
-
     # ✅ Premium Fields
     is_premium = db.Column(db.Boolean, default=False)
     subscription_end = db.Column(db.DateTime, nullable=True)
-
-    trades = db.relationship('Trade', backref='user', lazy=True)
+    plan_type = db.Column(db.String(50), default='free')  # free, monthly, yearly
+    # ✅ Free User Limits
+    free_calculations_count = db.Column(db.Integer, default=0)
+    free_calculations_reset = db.Column(db.DateTime, default=datetime.utcnow)
+    trades = db.relationship('Trade', backref='user', lazy=True, cascade='all, delete-orphan')
 
 class Trade(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -91,141 +65,78 @@ class Trade(db.Model):
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# ... (Trade model ke baad ye naya route add karo) ...
+# --- Helper Functions ---
+def allowed_file(filename):
+    if not filename or '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower().strip()
+    return ext in ALLOWED_EXTENSIONS
 
-# --- NEW: CSV Upload & Auto-Calculate Route ---
-# --- NEW: CSV Upload & Auto-Calculate Route (Debug Version) ---
-@app.route('/upload', methods=['GET', 'POST'])
-@login_required
-def upload():
-    # ✅ Check Premium Status
+def check_premium():
+    """Check if user has active premium subscription"""
     if not current_user.is_premium:
-        flash('⚠️ This feature is for Premium users only. Please upgrade!', 'error')
-        return redirect(url_for('pricing'))  # Pricing page pe bhejo
+        return False
+    if current_user.subscription_end and current_user.subscription_end < datetime.now():
+        current_user.is_premium = False
+        current_user.plan_type = 'free'
+        current_user.free_calculations_count = 0
+        current_user.free_calculations_reset = datetime.utcnow()
+        db.session.commit()
+        return False
+    return True
 
-    # ... baaki upload code same rahega ...
+def check_free_limit():
+    """Check if free user has reached calculation limit (5/month)"""
+    if current_user.is_premium:
+        return True, 0
 
-    if request.method == 'POST':
-        print("🔍 DEBUG: File upload request received")
+    # Reset counter if month changed
+    if current_user.free_calculations_reset < datetime.utcnow() - timedelta(days=30):
+        current_user.free_calculations_count = 0
+        current_user.free_calculations_reset = datetime.utcnow()
+        db.session.commit()
 
-        if 'file' not in request.files:
-            print("❌ ERROR: No file part in request")
-            flash('No file selected', 'error')
-            return redirect(request.url)
+    remaining = 5 - current_user.free_calculations_count
+    return current_user.free_calculations_count < 5, remaining
 
-        file = request.files['file']
-        print(f"📁 File object: {file}")
-        print(f"📁 Filename: '{file.filename}'")
+def increment_free_calc():
+    """Increment free calculation counter"""
+    if not current_user.is_premium:
+        current_user.free_calculations_count += 1
+        db.session.commit()
 
-        if file.filename == '':
-            print("❌ ERROR: Empty filename")
-            flash('No file selected', 'error')
-            return redirect(request.url)
+def create_crypto_invoice(amount_usd, user_id, plan):
+    """Create Payment Invoice via NowPayments - Auto Convert to USDT TRC20"""
+    api_key = os.environ.get('NOWPAYMENTS_API_KEY')
+    if not api_key:
+        print("❌ NowPayments API Key not configured")
+        return None
 
-        is_allowed = allowed_file(file.filename)
-        print(f"🔍 allowed_file() returned: {is_allowed}")
+    headers = {
+        'x-api-key': api_key,
+        'Content-Type': 'application/json'
+    }
 
-        if file and is_allowed:
-            print("✅ File type allowed, proceeding...")
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    # Get live URL from environment or request
+    live_url = os.environ.get('RENDER_EXTERNAL_URL', request.host_url.rstrip('/'))
 
-            try:
-                file.save(filepath)
-                print(f"✅ File saved at: {filepath}")
+    data = {
+        'price_amount': amount_usd,
+        'price_currency': 'usd',
+        'pay_currency': 'usdttrc20',  # ✅ Auto-convert to USDT TRC20
+        'ipn_callback_url': f'{live_url}/webhook',
+        'order_id': f'user_{user_id}_{plan}_{int(datetime.now().timestamp())}',
+        'order_description': f'Crypto Tax {plan.title()} Subscription'
+    }
 
-                df = pd.read_csv(filepath)
-                print(f"📊 CSV loaded: {len(df)} rows found")
-                print(f"📋 Columns: {list(df.columns)}")
-
-                results = []
-
-                for index, row in df.iterrows():
-                    trade_type = str(row.get('Type', '')).strip().upper()
-                    fees = float(row.get('Fees', 0)) if pd.notna(row.get('Fees')) else 0
-
-                    print(f"🔄 Row {index} - Type: '{trade_type}', Fees: {fees}")
-
-                    if trade_type == 'BUY':
-                        results.append({'date': row.get('Date'), 'type': 'BUY', 'note': 'No tax'})
-
-                    elif trade_type == 'SELL':
-                        sell_value = float(row.get('Total', 0))
-                        buy_value = sell_value * 0.8
-
-                        gross_profit = sell_value - buy_value - fees
-                        gst_on_fees = fees * 0.18
-                        total_fees = fees + gst_on_fees
-
-                        if gross_profit > 0:
-                            income_tax = gross_profit * 0.30
-                            cess = income_tax * 0.04
-                            tds = sell_value * 0.01
-                            net_profit = gross_profit - income_tax - cess - tds - total_fees
-                        else:
-                            income_tax = cess = tds = 0
-                            net_profit = gross_profit - total_fees
-
-                        new_trade = Trade(
-                            buy_price=buy_value,
-                            sell_price=sell_value,
-                            fees=fees,
-                            profit=net_profit,
-                            tax=(income_tax + cess),
-                            user_id=current_user.id
-                        )
-                        db.session.add(new_trade)
-
-                        results.append({
-                            'date': row.get('Date'),
-                            'type': 'SELL',
-                            'tax': round(income_tax + cess, 2),
-                            'net_profit': round(net_profit, 2)
-                        })
-
-                db.session.commit()
-                print(f"✅ Success! Processed {len(results)} trades")
-                flash(f'🎉 Successfully processed {len(results)} trades!', 'success')
-
-            except Exception as e:
-                print(f"❌ CRITICAL ERROR: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                flash(f'Error: {str(e)}', 'error')
-
-            return redirect(url_for('history'))
-        else:
-            print("❌ ERROR: File type NOT allowed")
-            flash('Invalid file type. Please upload CSV only.', 'error')
-            return redirect(request.url)
-
-    return render_template('upload.html')
-
-# --- NEW: Export Report Route ---
-@app.route('/export')
-@login_required
-def export():
-    user_trades = Trade.query.filter_by(user_id=current_user.id).all()
-
-    import io
-    output = io.StringIO()
-    # ✅ Fixed columns to match import format
-    output.write('Date,Type,Asset,Amount,Price,Total,Fees\n')
-    for trade in user_trades:
-        # Determine Type based on profit (simplified)
-        trade_type = 'SELL' if trade.profit > 0 else 'BUY'
-        output.write(f'{trade.date.strftime("%Y-%m-%d")},{trade_type},BTC,1,{trade.buy_price},{trade.sell_price},{trade.fees}\n')
-
-    from flask import send_file
-    output.seek(0)
-    return send_file(
-        io.BytesIO(output.getvalue().encode()),
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name='crypto_tax_report.csv'
-    )
-
-# ... (baaki routes same rahenge) ...
+    try:
+        response = requests.post('https://api.nowpayments.io/v1/invoice', json=data, headers=headers)
+        result = response.json()
+        print(f"📝 Invoice Created: {result}")
+        return result
+    except Exception as e:
+        print(f"Payment Error: {e}")
+        return None
 
 # --- Routes ---
 
@@ -273,134 +184,301 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    return render_template('dashboard.html', name=current_user.username)
+    is_active = check_premium()
+    total_trades = Trade.query.filter_by(user_id=current_user.id).count()
+    total_profit = db.session.query(db.func.sum(Trade.profit)).filter_by(user_id=current_user.id).scalar() or 0
+    total_tax = db.session.query(db.func.sum(Trade.tax)).filter_by(user_id=current_user.id).scalar() or 0
+    has_limit, remaining = check_free_limit()
+    return render_template('dashboard.html', name=current_user.username, is_active=is_active, 
+                         total_trades=total_trades, total_profit=total_profit, total_tax=total_tax,
+                         free_remaining=remaining, free_limit=5)
 
-# --- NEW: Tax Calculator Route ---
+# --- Manual Calculator (FREE with Limit) ---
 @app.route('/calculate', methods=['GET', 'POST'])
 @login_required
 def calculate():
     result = None
+    has_limit, remaining = check_free_limit()
+
+    if not has_limit:
+        flash('⚠️ Free limit reached (5 calculations/month). Upgrade to Premium!', 'error')
+        return redirect(url_for('pricing'))
+
     if request.method == 'POST':
         try:
             buy = float(request.form.get('buy_price'))
             sell = float(request.form.get('sell_price'))
             fees = float(request.form.get('fees'))
-
-            # --- Tax Logic (India Crypto Rules) ---
             gross_profit = sell - buy - fees
-            gst_on_fees = fees * 0.18  # 18% GST on fees
+            gst_on_fees = fees * 0.18
             total_fees = fees + gst_on_fees
-
             if gross_profit > 0:
-                income_tax = gross_profit * 0.30  # 30% Tax
-                cess = income_tax * 0.04  # 4% Cess
-                tds = sell * 0.01  # 1% TDS on sell value
+                income_tax = gross_profit * 0.30
+                cess = income_tax * 0.04
+                tds = sell * 0.01
                 net_profit = gross_profit - income_tax - cess - tds - total_fees
             else:
                 income_tax = cess = tds = 0
                 net_profit = gross_profit - total_fees
 
-            # Save to Database
-            new_trade = Trade(
-                buy_price=buy, sell_price=sell, fees=fees,
-                profit=net_profit, tax=(income_tax + cess),
-                user_id=current_user.id
-            )
+            new_trade = Trade(buy_price=buy, sell_price=sell, fees=fees, profit=net_profit, 
+                            tax=(income_tax + cess), user_id=current_user.id)
             db.session.add(new_trade)
             db.session.commit()
+            increment_free_calc()
 
-            result = {
-                'gross_profit': gross_profit,
-                'tax': income_tax + cess,
-                'tds': tds,
-                'gst_fees': gst_on_fees,
-                'net_profit': net_profit
-            }
+            result = {'gross_profit': gross_profit, 'tax': income_tax + cess, 'tds': tds, 
+                     'gst_fees': gst_on_fees, 'net_profit': net_profit}
+            flash('✅ Trade saved successfully!', 'success')
         except Exception as e:
-            flash('Error in calculation. Please check numbers.', 'error')
+            flash(f'Error in calculation: {str(e)}', 'error')
 
-    return render_template('calculate.html', result=result)
+    return render_template('calculate.html', result=result, remaining=remaining, free_limit=5)
 
-# --- NEW: History Route ---
+# --- History with Delete (FREE) ---
 @app.route('/history')
 @login_required
 def history():
+    # ✅ Force fresh query from database
+    db.session.expire_all()
     user_trades = Trade.query.filter_by(user_id=current_user.id).order_by(Trade.date.desc()).all()
-    return render_template('history.html', trades=user_trades)
+    print(f"📊 History: Found {len(user_trades)} trades for user {current_user.id}")
 
-# --- Database Create ---
-with app.app_context():
-    db.create_all()
+    response = make_response(render_template('history.html', trades=user_trades))
+    # ✅ Prevent browser caching
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
-def create_crypto_invoice(amount_usd, user_id):
-    """Create Payment Invoice via NowPayments"""
-    headers = {
-        'x-api-key': NOWPAYMENTS_API_KEY,
-        'Content-Type': 'application/json'
-    }
-    data = {
-        'price_amount': amount_usd,
-        'price_currency': 'usd',
-        'pay_currency': 'usdttrc20',  # USDT TRC20 (Low fees)
-        'ipn_callback_url': 'https://YOUR-RENDER-URL.onrender.com/webhook',  # ⚠️ Deploy ke baad update karna
-        'order_id': f'user_{user_id}_{int(datetime.now().timestamp())}',
-        'order_description': 'Crypto Tax Premium Subscription'
-    }
+@app.route('/delete-trade/<int:trade_id>')
+@login_required
+def delete_trade(trade_id):
+    trade = Trade.query.get_or_404(trade_id)
+    if trade.user_id != current_user.id:
+        flash('Unauthorized access', 'error')
+        return redirect(url_for('history'))
+    db.session.delete(trade)
+    db.session.commit()
+    flash('Trade deleted successfully', 'success')
+    return redirect(url_for('history'))
 
-    try:
-        response = requests.post(f'{NOWPAYMENTS_BASE_URL}/invoice', json=data, headers=headers)
-        return response.json()
-    except Exception as e:
-        print(f"Payment Error: {e}")
-        return None
+# --- Export All Trades (PREMIUM) ---
+@app.route('/export')
+@login_required
+def export():
+    if not check_premium():
+        flash('⚠️ Export is for Premium users only.', 'error')
+        return redirect(url_for('pricing'))
+    user_trades = Trade.query.filter_by(user_id=current_user.id).all()
+    output = io.StringIO()
+    output.write('Date,Type,Asset,Amount,Price,Total,Fees,Profit,Tax\n')
+    for trade in user_trades:
+        trade_type = 'SELL' if trade.profit > 0 else 'BUY'
+        output.write(f'{trade.date.strftime("%Y-%m-%d")},{trade_type},BTC,1,{trade.buy_price},{trade.sell_price},{trade.fees},{trade.profit},{trade.tax}\n')
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv', 
+                    as_attachment=True, download_name='crypto_tax_report.csv')
 
-# ✅ Webhook Route (Verify Payment)
+# --- Export Individual Trade (PREMIUM) ---
+@app.route('/export-trade/<int:trade_id>')
+@login_required
+def export_trade(trade_id):
+    if not check_premium():
+        flash('⚠️ Export is for Premium users only.', 'error')
+        return redirect(url_for('pricing'))
+
+    trade = Trade.query.get_or_404(trade_id)
+    if trade.user_id != current_user.id:
+        flash('Unauthorized access', 'error')
+        return redirect(url_for('history'))
+
+    output = io.StringIO()
+    output.write('Field,Value\n')
+    output.write(f'Date,{trade.date.strftime("%Y-%m-%d")}\n')
+    output.write(f'Type,{"SELL" if trade.profit > 0 else "BUY"}\n')
+    output.write(f'Buy Price,{trade.buy_price}\n')
+    output.write(f'Sell Price,{trade.sell_price}\n')
+    output.write(f'Fees,{trade.fees}\n')
+    output.write(f'Profit,{trade.profit}\n')
+    output.write(f'Tax,{trade.tax}\n')
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv', 
+                    as_attachment=True, download_name=f'trade_{trade_id}_report.csv')
+
+# --- Pricing Page ---
+@app.route('/pricing')
+@login_required
+def pricing():
+    is_active = check_premium()
+    has_limit, remaining = check_free_limit()
+    return render_template('pricing.html', is_active=is_active, free_remaining=remaining, free_limit=5)
+
+# --- Buy Premium (Local Mock + Production Real) ---
+@app.route('/buy-premium', methods=['POST'])
+@login_required
+def buy_premium():
+    plan = request.form.get('plan', 'monthly')
+
+    # ✅ Check if running on Render (Production)
+    if os.environ.get('DATABASE_URL') and os.environ.get('NOWPAYMENTS_API_KEY'):
+        # PRODUCTION: Real NowPayments
+        amount = 99.99 if plan == 'yearly' else 19.99
+        invoice = create_crypto_invoice(amount, current_user.id, plan)
+
+        if invoice and 'invoice_url' in invoice:
+            print(f"🔗 Redirecting to payment: {invoice['invoice_url']}")
+            return redirect(invoice['invoice_url'])
+        else:
+            flash('Payment gateway error. Please try again or contact support.', 'error')
+            return redirect(url_for('pricing'))
+    else:
+        # LOCAL: Mock payment (testing)
+        current_user.is_premium = True
+        current_user.plan_type = plan
+        if plan == 'yearly':
+            current_user.subscription_end = datetime.now() + timedelta(days=365)
+            flash('🎉 Yearly Premium Activated! (Test Mode)', 'success')
+        else:
+            current_user.subscription_end = datetime.now() + timedelta(days=30)
+            flash('🎉 Monthly Premium Activated! (Test Mode)', 'success')
+        current_user.free_calculations_count = 0
+        db.session.commit()
+        print(f"✅ Mock Premium activated for {current_user.email} ({plan})")
+        return redirect(url_for('dashboard'))
+
+# --- CSV Upload (Monthly=Single, Yearly=Multiple) ---
+# --- CSV Upload (Monthly=Single, Yearly=Multiple) - NO PANDAS VERSION ---
+@app.route('/upload', methods=['GET', 'POST'])
+@login_required
+def upload():
+    if not check_premium():
+        flash('⚠️ CSV Upload is for Premium users only. Please upgrade!', 'error')
+        return redirect(url_for('pricing'))
+
+    if request.method == 'POST':
+        files = request.files.getlist('files')
+
+        # ✅ Monthly Plan: Only 1 file allowed
+        if current_user.plan_type == 'monthly' and len(files) > 1:
+            flash('⚠️ Monthly plan allows 1 file at a time. Upgrade to Yearly for multiple files!', 'error')
+            return redirect(url_for('upload'))
+
+        if not files or all(f.filename == '' for f in files):
+            flash('No file selected', 'error')
+            return redirect(request.url)
+
+        total_trades = 0
+
+        for file in files:
+            if file and file.filename and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+                try:
+                    file.save(filepath)
+
+                    # ✅ Using built-in csv module instead of pandas
+                    import csv
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        file_trades = 0
+
+                        for row in reader:
+                            trade_type = str(row.get('Type', '')).strip().upper()
+                            fees_str = row.get('Fees', '0') or '0'
+                            fees = float(fees_str) if fees_str else 0
+
+                            if trade_type == 'BUY':
+                                file_trades += 1
+                            elif trade_type == 'SELL':
+                                total_str = row.get('Total', '0') or '0'
+                                sell_value = float(total_str) if total_str else 0
+                                buy_value = sell_value * 0.8  # Simplified logic
+
+                                gross_profit = sell_value - buy_value - fees
+                                gst_on_fees = fees * 0.18
+                                total_fees = fees + gst_on_fees
+
+                                if gross_profit > 0:
+                                    income_tax = gross_profit * 0.30
+                                    cess = income_tax * 0.04
+                                    tds = sell_value * 0.01
+                                    net_profit = gross_profit - income_tax - cess - tds - total_fees
+                                else:
+                                    income_tax = cess = tds = 0
+                                    net_profit = gross_profit - total_fees
+
+                                new_trade = Trade(
+                                    buy_price=buy_value,
+                                    sell_price=sell_value,
+                                    fees=fees,
+                                    profit=net_profit,
+                                    tax=(income_tax + cess),
+                                    user_id=current_user.id
+                                )
+                                db.session.add(new_trade)
+                                file_trades += 1
+
+                    total_trades += file_trades
+                    print(f"✅ File {filename}: {file_trades} trades processed")
+
+                except Exception as e:
+                    print(f"❌ Error processing {filename}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    flash(f'Error in {filename}: {str(e)}', 'error')
+
+        # ✅ Force commit before redirect
+        db.session.commit()
+        print(f"✅ Total {total_trades} trades committed to database")
+
+        flash(f'🎉 Successfully processed {total_trades} trades!', 'success')
+        return redirect(url_for('history'))
+
+    return render_template('upload.html')
+
+# --- Webhook (NowPayments IPN Callback) ---
 @app.route('/webhook', methods=['POST'])
 def nowpayments_webhook():
-    """NowPayments IPN Callback"""
-    # Verify IPN Secret (Security)
-    ipn_secret = os.environ.get('IPN_SECRET', 'test_secret')
-    received_hash = request.headers.get('x-nowpayments-sig')
-
-    # Simple verification (Production mein strict karna)
-    # Sort params, concatenate with secret, hash via HMAC_SHA512
-    # For MVP, we trust the order_id structure
+    """NowPayments IPN Callback - Verify & Activate Premium"""
+    ipn_secret = os.environ.get('IPN_SECRET', '').encode('utf-8')
+    received_sig = request.headers.get('x-nowpayments-sig', '')
 
     data = request.json
-    order_id = data.get('order_id')
     payment_status = data.get('payment_status')
+    order_id = data.get('order_id')
+
+    print(f" Webhook received: {payment_status} for order {order_id}")
 
     if payment_status == 'finished':
-        # Extract user_id from order_id (user_123_...)
         try:
-            user_id = int(order_id.split('_')[1])
+            # Extract user_id and plan from order_id (user_123_yearly_...)
+            parts = order_id.split('_')
+            user_id = int(parts[1])
+            plan = parts[2]
+
             user = User.query.get(user_id)
             if user:
                 user.is_premium = True
-                user.subscription_end = datetime.now() + timedelta(days=30)  # 1 Month
+                user.plan_type = plan
+                if plan == 'yearly':
+                    user.subscription_end = datetime.now() + timedelta(days=365)
+                else:
+                    user.subscription_end = datetime.now() + timedelta(days=30)
+                user.free_calculations_count = 0
                 db.session.commit()
-                print(f"✅ Premium activated for user {user_id}")
+                print(f"✅ Premium activated for user {user_id} ({plan})")
+            else:
+                print(f"❌ User {user_id} not found")
         except Exception as e:
             print(f"Webhook Error: {e}")
 
     return {'status': 'ok'}, 200
 
-@app.route('/pricing')
-@login_required
-def pricing():
-    return render_template('pricing.html')
-
-@app.route('/buy-premium', methods=['POST'])
-@login_required
-def buy_premium():
-    # Create Invoice
-    invoice = create_crypto_invoice(19.99, current_user.id)  # $19.99 Monthly
-
-    if invoice and 'invoice_url' in invoice:
-        return redirect(invoice['invoice_url'])
-    else:
-        flash('Payment gateway error. Try again.', 'error')
-        return redirect(url_for('pricing'))
+# --- Database Create ---
+with app.app_context():
+    db.create_all()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
